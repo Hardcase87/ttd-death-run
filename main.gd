@@ -1,9 +1,9 @@
 extends Node2D
 
 const WORLD_W = 7200.0
-const FLOOR_Y = 610.0
+const FLOOR_Y = 600.0
+const CONTROL_TOP = 625.0
 
-# HARDCASE
 var hc_idle = preload("res://assets/sprites/hardcase/hardcase_01.png")
 var hc_run1 = preload("res://assets/sprites/hardcase/hardcase_02.png")
 var hc_run2 = preload("res://assets/sprites/hardcase/hardcase_03.png")
@@ -13,14 +13,10 @@ var hc_smash = preload("res://assets/sprites/hardcase/hardcase_08.png")
 var hc_hurt = preload("res://assets/sprites/hardcase/hardcase_09.png")
 var hc_win = preload("res://assets/sprites/hardcase/hardcase_10.png")
 
-# ENEMIES / PICKUPS
 var enemy_mutant_idle = preload("res://assets/sprites/enemies/enemy_02.png")
 var enemy_mutant_run = preload("res://assets/sprites/enemies/enemy_03.png")
-var medkit_tex = preload("res://assets/sprites/enemies/enemy_07.png")
-var ammo_tex = preload("res://assets/sprites/enemies/enemy_08.png")
 var mine_tex = preload("res://assets/sprites/enemies/enemy_09.png")
 
-# VHS QUARTER ENVIRONMENT
 var vhs_sign = preload("res://assets/environment/vhs_quarter/vhs_01.png")
 var vhs_store = preload("res://assets/environment/vhs_quarter/vhs_02.png")
 var no_refunds = preload("res://assets/environment/vhs_quarter/vhs_03.png")
@@ -44,7 +40,7 @@ var player_health = 100
 var player_lives = 3
 var smash_timer = 0.0
 var hurt_timer = 0.0
-var win_timer = 0.0
+var stage_finished = false
 
 var camera_x = 0.0
 var shake_time = 0.0
@@ -64,11 +60,12 @@ var active_touch_right = -1
 var active_touch_jump = -1
 var active_touch_smash = -1
 
-var enemy_x = [1080.0, 1750.0, 2520.0, 3560.0, 4700.0, 5940.0]
+var enemy_home = [1120.0, 2050.0, 3000.0, 4050.0, 5200.0, 6420.0]
+var enemy_x = [1120.0, 2050.0, 3000.0, 4050.0, 5200.0, 6420.0]
 var enemy_hp = [2, 2, 3, 3, 4, 4]
 var enemy_alive = [true, true, true, true, true, true]
 
-var prop_x = [780.0, 1420.0, 2140.0, 3010.0, 3970.0, 5180.0, 6490.0]
+var prop_x = [830.0, 1550.0, 2460.0, 3350.0, 4380.0, 5550.0, 6760.0]
 var prop_kind = [0, 1, 2, 1, 3, 0, 2]
 var prop_alive = [true, true, true, true, true, true, true]
 
@@ -79,16 +76,16 @@ func _input(event):
 	if event is InputEventScreenTouch:
 		var pos = event.position
 		if event.pressed:
-			if Rect2(18, 630, 150, 72).has_point(pos):
+			if Rect2(18, 635, 150, 68).has_point(pos):
 				touch_left = true
 				active_touch_left = event.index
-			elif Rect2(180, 630, 150, 72).has_point(pos):
+			elif Rect2(180, 635, 150, 68).has_point(pos):
 				touch_right = true
 				active_touch_right = event.index
-			elif Rect2(920, 630, 160, 72).has_point(pos):
+			elif Rect2(920, 635, 160, 68).has_point(pos):
 				touch_jump = true
 				active_touch_jump = event.index
-			elif Rect2(1092, 630, 170, 72).has_point(pos):
+			elif Rect2(1092, 635, 170, 68).has_point(pos):
 				touch_smash = true
 				active_touch_smash = event.index
 		else:
@@ -99,10 +96,8 @@ func _input(event):
 				touch_right = false
 				active_touch_right = -1
 			if event.index == active_touch_jump:
-				touch_jump = false
 				active_touch_jump = -1
 			if event.index == active_touch_smash:
-				touch_smash = false
 				active_touch_smash = -1
 
 func _process(delta):
@@ -110,7 +105,6 @@ func _process(delta):
 	run_anim_time += delta
 	shake_time = max(0.0, shake_time - delta)
 	flash_time = max(0.0, flash_time - delta)
-	win_timer = max(0.0, win_timer - delta)
 
 	handle_input(delta)
 	update_player(delta)
@@ -122,8 +116,11 @@ func _process(delta):
 	queue_redraw()
 
 func handle_input(delta):
-	var direction = 0.0
+	if stage_finished:
+		player_vx = move_toward(player_vx, 0.0, 2100.0 * delta)
+		return
 
+	var direction = 0.0
 	if Input.is_action_pressed("move_left") or touch_left:
 		direction -= 1.0
 	if Input.is_action_pressed("move_right") or touch_right:
@@ -138,7 +135,6 @@ func handle_input(delta):
 	if touch_jump:
 		jump_pressed = true
 		touch_jump = false
-		active_touch_jump = -1
 
 	if jump_pressed and player_grounded:
 		player_vy = -720.0
@@ -148,7 +144,6 @@ func handle_input(delta):
 	if touch_smash:
 		smash_pressed = true
 		touch_smash = false
-		active_touch_smash = -1
 
 	if smash_pressed and smash_timer <= 0.0:
 		smash_timer = 0.30
@@ -160,7 +155,6 @@ func update_player(delta):
 	player_vy += 1900.0 * delta
 	player_x += player_vx * delta
 	player_y += player_vy * delta
-
 	player_x = clamp(player_x, 60.0, WORLD_W - 80.0)
 
 	if player_y >= FLOOR_Y - 126.0:
@@ -171,10 +165,10 @@ func update_player(delta):
 	if player_x > checkpoint + 1500.0:
 		checkpoint = player_x
 
-	if player_x >= WORLD_W - 250.0:
-		win_timer = 3.0
+	if player_x >= WORLD_W - 250.0 and not stage_finished:
+		stage_finished = true
 		score += 5000
-		player_x = WORLD_W - 250.0
+		kick_camera(0.25, 10.0)
 
 func update_enemies(delta):
 	for i in range(enemy_x.size()):
@@ -183,18 +177,22 @@ func update_enemies(delta):
 
 		var dx = player_x - enemy_x[i]
 
-		if abs(dx) < 560.0:
+		if abs(dx) < 430.0:
 			var enemy_dir = 1.0
 			if dx < 0.0:
 				enemy_dir = -1.0
-			enemy_x[i] += enemy_dir * 105.0 * delta
+			enemy_x[i] += enemy_dir * 92.0 * delta
+		else:
+			enemy_x[i] = move_toward(enemy_x[i], enemy_home[i], 60.0 * delta)
 
-		var touching = abs(player_x - enemy_x[i]) < 88.0 and abs((player_y + 60.0) - (FLOOR_Y - 62.0)) < 105.0
+		enemy_x[i] = clamp(enemy_x[i], enemy_home[i] - 180.0, enemy_home[i] + 180.0)
+
+		var touching = abs(player_x - enemy_x[i]) < 82.0 and abs((player_y + 60.0) - (FLOOR_Y - 62.0)) < 100.0
 
 		if touching:
 			if smash_timer > 0.0:
 				enemy_hp[i] -= 1
-				enemy_x[i] += player_facing * 105.0
+				enemy_x[i] += player_facing * 90.0
 				kick_camera(0.14, 9.0)
 				flash_time = 0.06
 				if enemy_hp[i] <= 0:
@@ -218,7 +216,7 @@ func update_props():
 	for i in range(prop_x.size()):
 		if not prop_alive[i]:
 			continue
-		if abs(player_x - prop_x[i]) < 125.0:
+		if abs(player_x - prop_x[i]) < 120.0:
 			prop_alive[i] = false
 			score += 150
 			kick_camera(0.18, 11.0)
@@ -258,10 +256,10 @@ func _draw():
 	draw_enemies()
 	draw_player()
 	draw_hud()
-	draw_mobile_controls()
+	draw_control_deck()
 
 	if flash_time > 0.0:
-		draw_rect(Rect2(0, 0, 1280, 720), Color(1, 1, 1, 0.18))
+		draw_rect(Rect2(0, 0, 1280, CONTROL_TOP), Color(1, 1, 1, 0.18))
 
 func draw_background():
 	draw_rect(Rect2(0, 0, 1280, 720), Color("#080510"))
@@ -269,74 +267,66 @@ func draw_background():
 	var sx = get_shake_x()
 	var sy = get_shake_y()
 
-	# distant skyline
 	for i in range(18):
 		var bx = fmod(float(i) * 165.0 - camera_x * 0.12, 1500.0) - 120.0
 		var bh = 110.0 + float((i * 67) % 230)
-		draw_rect(Rect2(bx + sx, 515.0 - bh + sy, 105.0, bh), Color("#171128"))
+		draw_rect(Rect2(bx + sx, 505.0 - bh + sy, 105.0, bh), Color("#171128"))
 		if i % 2 == 0:
-			draw_line(Vector2(bx + 8.0 + sx, 535.0 - bh + sy), Vector2(bx + 92.0 + sx, 535.0 - bh + sy), Color("#ff2d95"), 3.0)
+			draw_line(Vector2(bx + 8.0 + sx, 525.0 - bh + sy), Vector2(bx + 92.0 + sx, 525.0 - bh + sy), Color("#ff2d95"), 3.0)
 
-	draw_rect(Rect2(0, FLOOR_Y, 1280, 110), Color("#08080c"))
+	draw_rect(Rect2(0, 360, 1280, 240), Color("#11091bcc"))
+	draw_rect(Rect2(0, FLOOR_Y, 1280, CONTROL_TOP - FLOOR_Y), Color("#08080c"))
 	draw_line(Vector2(0, FLOOR_Y), Vector2(1280, FLOOR_Y), Color("#ff2d95"), 3.0)
 
-	for x in range(-100, 1400, 120):
-		var xx = float(x) - fmod(camera_x * 0.7, 120.0)
-		draw_line(Vector2(xx, FLOOR_Y + 44.0), Vector2(xx + 58.0, FLOOR_Y + 44.0), Color("#8aff2b"), 4.0)
-
 func draw_vhs_quarter():
-	var sx = get_shake_x()
-	var sy = get_shake_y()
+	draw_asset_bottom(vhs_store, 340.0, FLOOR_Y, 330.0)
+	draw_asset_bottom(vhs_sign, 1140.0, 390.0, 285.0)
+	draw_asset_bottom(crt_stack, 1540.0, FLOOR_Y, 175.0)
+	draw_asset_bottom(no_refunds, 2160.0, 405.0, 305.0)
+	draw_asset_bottom(dumpster, 2690.0, FLOOR_Y, 160.0)
 
-	# landmark storefronts
-	draw_world_texture(vhs_store, 420.0, 240.0, 360.0, 462.0, sx, sy)
-	draw_world_texture(vhs_store, 3050.0, 250.0, 350.0, 448.0, sx, sy)
-	draw_world_texture(vhs_store, 5720.0, 245.0, 360.0, 462.0, sx, sy)
+	draw_asset_bottom(vhs_store, 3150.0, FLOOR_Y, 320.0)
+	draw_asset_bottom(vhs_billboard, 4030.0, FLOOR_Y, 235.0)
+	draw_asset_bottom(crt_stack, 4510.0, FLOOR_Y, 170.0)
 
-	# large signage / billboards
-	draw_world_texture(vhs_sign, 1180.0, 260.0, 330.0, 245.0, sx, sy)
-	draw_world_texture(no_refunds, 2080.0, 300.0, 360.0, 145.0, sx, sy)
-	draw_world_texture(vhs_billboard, 3890.0, 235.0, 300.0, 560.0, sx, sy)
-	draw_world_texture(vhs_sign, 5000.0, 275.0, 310.0, 230.0, sx, sy)
+	draw_asset_bottom(vhs_sign, 5050.0, 400.0, 275.0)
+	draw_asset_bottom(vhs_store, 5790.0, FLOOR_Y, 325.0)
+	draw_asset_bottom(dumpster, 6310.0, FLOOR_Y, 160.0)
 
-	# street clutter
-	draw_world_texture(crt_stack, 1580.0, 455.0, 210.0, 138.0, sx, sy)
-	draw_world_texture(dumpster, 2720.0, 465.0, 190.0, 132.0, sx, sy)
-	draw_world_texture(crt_stack, 4430.0, 452.0, 210.0, 138.0, sx, sy)
-	draw_world_texture(dumpster, 6250.0, 465.0, 190.0, 132.0, sx, sy)
+	draw_asset_bottom(tape_pile, 910.0, FLOOR_Y - 4.0, 105.0)
+	draw_asset_bottom(tape_pile, 3470.0, FLOOR_Y - 4.0, 105.0)
+	draw_asset_bottom(tape_pile, 5470.0, FLOOR_Y - 4.0, 105.0)
 
-	# decorative VHS piles
-	draw_world_texture(tape_pile, 890.0, 548.0, 115.0, 44.0, sx, sy)
-	draw_world_texture(tape_pile, 3360.0, 548.0, 115.0, 44.0, sx, sy)
-	draw_world_texture(tape_pile, 5350.0, 548.0, 115.0, 44.0, sx, sy)
+	draw_asset_bottom(platform_long, 1840.0, FLOOR_Y + 8.0, 390.0)
+	draw_asset_bottom(platform_short, 4810.0, FLOOR_Y + 8.0, 190.0)
 
-	# platforms / sidewalks
-	draw_world_texture(platform_long, 1850.0, 525.0, 430.0, 98.0, sx, sy)
-	draw_world_texture(platform_short, 4820.0, 520.0, 220.0, 132.0, sx, sy)
-
-func draw_world_texture(tex, world_x, screen_y, width, height, sx, sy):
-	var px = world_x - camera_x + sx
-	if px < -width - 60.0 or px > 1340.0:
+func draw_asset_bottom(tex, world_x, bottom_y, width):
+	var native_w = float(tex.get_width())
+	var native_h = float(tex.get_height())
+	if native_w <= 0.0:
 		return
-	draw_texture_rect(tex, Rect2(px, screen_y + sy, width, height), false)
+
+	var height = width * native_h / native_w
+	var px = world_x - camera_x + get_shake_x()
+
+	if px < -width - 40.0 or px > 1320.0:
+		return
+
+	draw_texture_rect(tex, Rect2(px, bottom_y - height + get_shake_y(), width, height), false)
 
 func draw_props():
 	for i in range(prop_x.size()):
 		if not prop_alive[i]:
 			continue
 
-		var px = prop_x[i] - camera_x + get_shake_x()
-		if px < -140.0 or px > 1400.0:
-			continue
-
 		if prop_kind[i] == 0:
-			draw_texture_rect(toxic_barrel, Rect2(px, FLOOR_Y - 105.0, 82.0, 105.0), false)
+			draw_asset_bottom(toxic_barrel, prop_x[i], FLOOR_Y, 70.0)
 		elif prop_kind[i] == 1:
-			draw_texture_rect(hazard_barrel, Rect2(px, FLOOR_Y - 102.0, 76.0, 102.0), false)
+			draw_asset_bottom(hazard_barrel, prop_x[i], FLOOR_Y, 68.0)
 		elif prop_kind[i] == 2:
-			draw_texture_rect(tape_boost, Rect2(px, FLOOR_Y - 90.0, 72.0, 90.0), false)
+			draw_asset_bottom(tape_boost, prop_x[i], FLOOR_Y, 58.0)
 		else:
-			draw_texture_rect(mine_tex, Rect2(px, FLOOR_Y - 68.0, 72.0, 58.0), false)
+			draw_asset_bottom(mine_tex, prop_x[i], FLOOR_Y - 4.0, 62.0)
 
 func draw_enemies():
 	for i in range(enemy_x.size()):
@@ -348,18 +338,20 @@ func draw_enemies():
 			continue
 
 		var tex = enemy_mutant_idle
-		if abs(player_x - enemy_x[i]) < 560.0:
+		if abs(player_x - enemy_x[i]) < 430.0:
 			tex = enemy_mutant_run
 
-		draw_texture_rect(tex, Rect2(ex - 58.0, FLOOR_Y - 146.0 + get_shake_y(), 132.0, 146.0), false)
+		var width = 122.0
+		var native_w = float(tex.get_width())
+		var native_h = float(tex.get_height())
+		var height = width * native_h / native_w
+		draw_texture_rect(tex, Rect2(ex - 45.0, FLOOR_Y - height + get_shake_y(), width, height), false)
 
 func draw_player():
 	var px = player_x - camera_x + get_shake_x()
-	var py = player_y + get_shake_y()
 
 	var tex = hc_idle
-
-	if win_timer > 0.0:
+	if stage_finished:
 		tex = hc_win
 	elif hurt_timer > 0.0:
 		tex = hc_hurt
@@ -376,48 +368,64 @@ func draw_player():
 		else:
 			tex = hc_run3
 
-	draw_texture_rect(tex, Rect2(px - 48.0, py - 12.0, 132.0, 126.0), false)
+	var width = 118.0
+	var native_w = float(tex.get_width())
+	var native_h = float(tex.get_height())
+	var height = width * native_h / native_w
+	var bottom = FLOOR_Y
+
+	if not player_grounded:
+		bottom = player_y + 126.0
+
+	draw_texture_rect(tex, Rect2(px - 38.0, bottom - height + get_shake_y(), width, height), false)
 
 	if smash_timer > 0.0:
-		var hit_x = px + 105.0
+		var hit_x = px + 92.0
 		if player_facing < 0.0:
-			hit_x = px - 35.0
-		draw_circle(Vector2(hit_x, py + 58.0), 34.0, Color(1.0, 0.18, 0.58, 0.30))
+			hit_x = px - 30.0
+		draw_circle(Vector2(hit_x, player_y + 58.0), 30.0, Color(1.0, 0.18, 0.58, 0.28))
 
 func draw_hud():
-	draw_rect(Rect2(0, 0, 1280, 104), Color("#050508f2"))
-	draw_line(Vector2(0, 103), Vector2(1280, 103), Color("#ff2d95"), 2.0)
+	draw_rect(Rect2(0, 0, 1280, 102), Color("#050508f5"))
+	draw_line(Vector2(0, 102), Vector2(1280, 102), Color("#ff2d95"), 2.0)
 
-	draw_string(ThemeDB.fallback_font, Vector2(28, 48), "TTD: DEATH RUN", HORIZONTAL_ALIGNMENT_LEFT, -1, 34, Color("#f3efe8"))
-	draw_string(ThemeDB.fallback_font, Vector2(28, 78), "TBN EXECUTION BROADCAST // STAGE 01", HORIZONTAL_ALIGNMENT_LEFT, -1, 15, Color("#8aff2b"))
+	draw_string(ThemeDB.fallback_font, Vector2(28, 46), "TTD: DEATH RUN", HORIZONTAL_ALIGNMENT_LEFT, -1, 34, Color("#f3efe8"))
+	draw_string(ThemeDB.fallback_font, Vector2(28, 77), "TBN EXECUTION BROADCAST // STAGE 01", HORIZONTAL_ALIGNMENT_LEFT, -1, 15, Color("#8aff2b"))
 
-	draw_string(ThemeDB.fallback_font, Vector2(420, 35), "VHS QUARTER", HORIZONTAL_ALIGNMENT_LEFT, -1, 20, Color("#ff2d95"))
+	draw_string(ThemeDB.fallback_font, Vector2(420, 34), "VHS QUARTER", HORIZONTAL_ALIGNMENT_LEFT, -1, 20, Color("#ff2d95"))
 	draw_string(ThemeDB.fallback_font, Vector2(420, 64), "SCORE " + str(score), HORIZONTAL_ALIGNMENT_LEFT, -1, 22, Color("#f3efe8"))
 
-	draw_string(ThemeDB.fallback_font, Vector2(710, 30), "HARDCASE '87 // HEALTH", HORIZONTAL_ALIGNMENT_LEFT, -1, 15, Color("#f3efe8"))
+	draw_string(ThemeDB.fallback_font, Vector2(710, 29), "HARDCASE '87 // HEALTH", HORIZONTAL_ALIGNMENT_LEFT, -1, 15, Color("#f3efe8"))
 	draw_rect(Rect2(710, 42, 245, 18), Color("#24101a"))
 	draw_rect(Rect2(710, 42, 245.0 * float(player_health) / 100.0, 18), Color("#ff2d95"))
 
-	draw_string(ThemeDB.fallback_font, Vector2(980, 50), "LIVES x " + str(player_lives), HORIZONTAL_ALIGNMENT_LEFT, -1, 20, Color("#8aff2b"))
+	draw_string(ThemeDB.fallback_font, Vector2(980, 49), "LIVES x " + str(player_lives), HORIZONTAL_ALIGNMENT_LEFT, -1, 20, Color("#8aff2b"))
 	draw_string(ThemeDB.fallback_font, Vector2(1138, 30), "TBN LIVE", HORIZONTAL_ALIGNMENT_LEFT, -1, 18, Color("#ff2d95"))
 	draw_string(ThemeDB.fallback_font, Vector2(1138, 57), "RATINGS UP", HORIZONTAL_ALIGNMENT_LEFT, -1, 15, Color("#8aff2b"))
 
-	draw_rect(Rect2(18, 116, 455, 44), Color("#08070be8"))
-	draw_rect(Rect2(18, 116, 455, 44), Color("#ff2d95"), false, 2.0)
-	draw_string(ThemeDB.fallback_font, Vector2(32, 145), "GRIM LEDGER: SURVIVAL REMAINS BULLISH.", HORIZONTAL_ALIGNMENT_LEFT, -1, 17, Color("#f3efe8"))
+	draw_rect(Rect2(18, 115, 455, 43), Color("#08070be8"))
+	draw_rect(Rect2(18, 115, 455, 43), Color("#ff2d95"), false, 2.0)
 
-func draw_mobile_controls():
-	var y = 630.0
-	draw_control_button(Rect2(18, y, 150, 72), "LEFT", touch_left, "#f3efe8")
-	draw_control_button(Rect2(180, y, 150, 72), "RIGHT", touch_right, "#f3efe8")
-	draw_control_button(Rect2(920, y, 160, 72), "JUMP", false, "#8aff2b")
-	draw_control_button(Rect2(1092, y, 170, 72), "SMASH", false, "#ff2d95")
+	var ticker = "GRIM LEDGER: SURVIVAL REMAINS BULLISH."
+	if stage_finished:
+		ticker = "TBN: HARDCASE SURVIVED. SHAREHOLDERS FURIOUS."
+
+	draw_string(ThemeDB.fallback_font, Vector2(32, 144), ticker, HORIZONTAL_ALIGNMENT_LEFT, -1, 17, Color("#f3efe8"))
+
+func draw_control_deck():
+	draw_rect(Rect2(0, CONTROL_TOP, 1280, 95), Color("#07070bee"))
+	draw_line(Vector2(0, CONTROL_TOP), Vector2(1280, CONTROL_TOP), Color("#8aff2b"), 2.0)
+
+	draw_control_button(Rect2(18, 635, 150, 68), "LEFT", touch_left, "#f3efe8")
+	draw_control_button(Rect2(180, 635, 150, 68), "RIGHT", touch_right, "#f3efe8")
+	draw_control_button(Rect2(920, 635, 160, 68), "JUMP", false, "#8aff2b")
+	draw_control_button(Rect2(1092, 635, 170, 68), "SMASH", false, "#ff2d95")
 
 func draw_control_button(rect, label, pressed, col):
-	var bg = Color("#0c0b12dd")
+	var bg = Color("#0c0b12")
 	if pressed:
-		bg = Color("#25152bdd")
+		bg = Color("#25152b")
 
 	draw_rect(rect, bg)
 	draw_rect(rect, Color(col), false, 2.0)
-	draw_string(ThemeDB.fallback_font, Vector2(rect.position.x + 22.0, rect.position.y + 45.0), label, HORIZONTAL_ALIGNMENT_LEFT, -1, 22, Color(col))
+	draw_string(ThemeDB.fallback_font, Vector2(rect.position.x + 22.0, rect.position.y + 43.0), label, HORIZONTAL_ALIGNMENT_LEFT, -1, 22, Color(col))
