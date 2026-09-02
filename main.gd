@@ -10,7 +10,7 @@ var hc_run1 = preload("res://assets/sprites/hardcase/hardcase_02.png")
 var hc_run2 = preload("res://assets/sprites/hardcase/hardcase_03.png")
 var hc_run3 = preload("res://assets/sprites/hardcase/hardcase_04.png")
 var hc_jump = preload("res://assets/sprites/hardcase/hardcase_05.png")
-var hc_shoot = preload("res://assets/sprites/hardcase/hardcase_06.png")
+var hc_shoot = preload("res://assets/sprites/hardcase/hardcase_07.png")
 var hc_smash = preload("res://assets/sprites/hardcase/hardcase_08.png")
 var hc_hurt = preload("res://assets/sprites/hardcase/hardcase_09.png")
 var hc_win = preload("res://assets/sprites/hardcase/hardcase_10.png")
@@ -94,8 +94,12 @@ var checkpoint_index = 0
 var game_time = 0.0
 var run_anim_time = 0.0
 
-var intro_timer = 4.0
+var game_started = false
+var title_pulse = 0.0
+var intro_timer = 3.6
 var mission_text_timer = 6.0
+var jump_burst_time = 0.0
+var landing_burst_time = 0.0
 var boss_started = false
 var boss_hp = 18
 
@@ -157,7 +161,6 @@ func _ready():
 	add_child(sfx_c)
 	music_player.stream = music_stream
 	music_player.volume_db = -10.0
-	music_player.play()
 	queue_redraw()
 
 func play_sfx(stream, volume_db):
@@ -173,9 +176,23 @@ func play_sfx(stream, volume_db):
 	p.volume_db = volume_db
 	p.play()
 
+func start_game():
+	if game_started:
+		return
+	game_started = true
+	intro_timer = 3.6
+	mission_text_timer = 6.0
+	music_player.play()
+	play_sfx(sfx_relay, -8.0)
+	kick_camera(0.18, 5.0)
+	queue_redraw()
+
 func _input(event):
 	if event is InputEventScreenTouch:
 		var pos = event.position
+		if event.pressed and not game_started:
+			start_game()
+			return
 		if event.pressed:
 			if Rect2(18, 637, 155, 72).has_point(pos):
 				touch_left = true
@@ -210,6 +227,16 @@ func _input(event):
 func _process(delta):
 	game_time += delta
 	run_anim_time += delta
+	title_pulse += delta
+	jump_burst_time = max(0.0, jump_burst_time - delta)
+	landing_burst_time = max(0.0, landing_burst_time - delta)
+
+	if not game_started:
+		if Input.is_key_pressed(KEY_ENTER) or Input.is_key_pressed(KEY_SPACE):
+			start_game()
+		queue_redraw()
+		return
+
 	intro_timer = max(0.0, intro_timer - delta)
 	mission_text_timer = max(0.0, mission_text_timer - delta)
 	shake_time = max(0.0, shake_time - delta)
@@ -258,8 +285,10 @@ func handle_input(delta):
 		touch_jump = false
 
 	if jump_pressed and player_grounded:
-		player_vy = -720.0
+		player_vy = -920.0
 		player_grounded = false
+		jump_burst_time = 0.18
+		kick_camera(0.07, 4.0)
 
 	var smash_pressed = Input.is_action_just_pressed("smash")
 	if touch_smash:
@@ -292,13 +321,17 @@ func update_player(delta):
 	smash_timer = max(0.0, smash_timer - delta)
 	hurt_timer = max(0.0, hurt_timer - delta)
 
-	player_vy += 1900.0 * delta
+	var was_grounded = player_grounded
+	player_vy += 2300.0 * delta
 	player_x += player_vx * delta
 	player_y += player_vy * delta
 	player_x = clamp(player_x, 60.0, WORLD_W - 80.0)
 
 	if player_y >= FLOOR_Y - 126.0:
 		player_y = FLOOR_Y - 126.0
+		if not was_grounded and player_vy > 360.0:
+			landing_burst_time = 0.20
+			kick_camera(0.11, 7.0)
 		player_vy = 0.0
 		player_grounded = true
 
@@ -319,7 +352,7 @@ func update_bullets(delta):
 		for i in range(enemy_x.size()):
 			if not enemy_alive[i] or not bullet_alive[b]:
 				continue
-			if abs(bullet_x[b] - enemy_x[i]) < 56.0 and abs(bullet_y[b] - (FLOOR_Y - 70.0)) < 85.0:
+			if abs(bullet_x[b] - enemy_x[i]) < 78.0 and abs(bullet_y[b] - (FLOOR_Y - 70.0)) < 85.0:
 				enemy_hp[i] -= 1
 				bullet_alive[b] = false
 				score += 50
@@ -378,7 +411,7 @@ func update_enemies(delta):
 			enemy_x[i] = move_toward(enemy_x[i], enemy_home[i], 55.0 * delta)
 
 		enemy_x[i] = clamp(enemy_x[i], enemy_home[i] - 210.0, enemy_home[i] + 210.0)
-		var touching = abs(player_x - enemy_x[i]) < 82.0 and abs((player_y + 60.0) - (FLOOR_Y - 62.0)) < 100.0
+		var touching = abs(player_x - enemy_x[i]) < 104.0 and abs((player_y + 60.0) - (FLOOR_Y - 62.0)) < 100.0
 
 		if touching:
 			enemy_attack_timer[i] = 0.25
@@ -475,6 +508,10 @@ func get_shake_y():
 	return cos(game_time * 113.0) * shake_power * 0.55
 
 func _draw():
+	if not game_started:
+		draw_title_screen()
+		return
+
 	draw_level_background()
 	draw_level_environment()
 	draw_relays()
@@ -489,6 +526,38 @@ func _draw():
 
 	if flash_time > 0.0:
 		draw_rect(Rect2(0, 0, 1280, CONTROL_TOP), Color(1, 1, 1, 0.16))
+
+
+func draw_title_screen():
+	draw_rect(Rect2(0, 0, 1280, 720), Color("#040306"))
+	var bg_w = float(level_bg.get_width()) * 0.72
+	var bg_h = float(level_bg.get_height()) * 0.72
+	draw_texture_rect(level_bg, Rect2(0, 0, bg_w, bg_h), false)
+	if bg_w < 1280.0:
+		draw_texture_rect(level_bg, Rect2(bg_w, 0, bg_w, bg_h), false)
+	draw_rect(Rect2(0, 0, 1280, 720), Color(0.01, 0.005, 0.02, 0.50))
+	draw_rect(Rect2(0, 0, 1280, 720), Color(1.0, 0.0, 0.45, 0.035))
+
+	var hero_w = 420.0
+	var hero_h = hero_w * float(hc_shoot.get_height()) / float(hc_shoot.get_width())
+	draw_texture_rect(hc_shoot, Rect2(42, 132, hero_w, hero_h), false)
+
+	draw_string(ThemeDB.fallback_font, Vector2(535, 165), "TACTICAL TERROR DIVISION", HORIZONTAL_ALIGNMENT_LEFT, -1, 22, Color("#f3efe8"))
+	draw_string(ThemeDB.fallback_font, Vector2(530, 258), "TTD:", HORIZONTAL_ALIGNMENT_LEFT, -1, 68, Color("#ff2d95"))
+	draw_string(ThemeDB.fallback_font, Vector2(525, 350), "DEATH RUN", HORIZONTAL_ALIGNMENT_LEFT, -1, 92, Color("#8aff2b"))
+	draw_string(ThemeDB.fallback_font, Vector2(535, 392), "VHS QUARTER UPRISING", HORIZONTAL_ALIGNMENT_LEFT, -1, 25, Color("#fff04a"))
+
+	draw_rect(Rect2(528, 432, 570, 82), Color("#09070ddd"))
+	draw_rect(Rect2(528, 432, 570, 82), Color("#ff2d95"), false, 3.0)
+	var pulse = 0.72 + 0.28 * abs(sin(title_pulse * 3.2))
+	draw_string(ThemeDB.fallback_font, Vector2(650, 486), "TAP TO DEPLOY", HORIZONTAL_ALIGNMENT_LEFT, -1, 35, Color(0.54, 1.0, 0.17, pulse))
+
+	draw_string(ThemeDB.fallback_font, Vector2(535, 552), "STAGE 01 // VHS QUARTER", HORIZONTAL_ALIGNMENT_LEFT, -1, 19, Color("#f3efe8"))
+	draw_string(ThemeDB.fallback_font, Vector2(535, 582), "SURVIVE THE BROADCAST.", HORIZONTAL_ALIGNMENT_LEFT, -1, 17, Color("#ff2d95"))
+	draw_string(ThemeDB.fallback_font, Vector2(535, 610), "DESTROY THE SIGNAL. ESCAPE THE FEED.", HORIZONTAL_ALIGNMENT_LEFT, -1, 17, Color("#f3efe8"))
+
+	draw_rect(Rect2(0, 650, 1280, 70), Color("#050508ef"))
+	draw_string(ThemeDB.fallback_font, Vector2(34, 692), "TBN LIVE // RATINGS UP // CASUALTY FORECAST: EXCELLENT", HORIZONTAL_ALIGNMENT_LEFT, -1, 17, Color("#ff2d95"))
 
 func draw_level_background():
 	draw_rect(Rect2(0, 0, 1280, 720), Color("#07050e"))
@@ -576,11 +645,11 @@ func draw_enemies():
 		if px < -180.0 or px > 1400.0:
 			continue
 		var src = get_enemy_region(i)
-		var width = 135.0
+		var width = 188.0
 		if enemy_type[i] == 1:
-			width = 140.0
+			width = 198.0
 		elif enemy_type[i] == 2:
-			width = 145.0
+			width = 208.0
 		var height = width * src.size.y / src.size.x
 		var facing_left = player_x < enemy_x[i]
 		draw_sheet_region(enemy_sheet, src, px - width * 0.42, FLOOR_Y - height + get_shake_y(), width, height, facing_left)
@@ -610,7 +679,7 @@ func draw_boss():
 	if px < -200.0 or px > 1450.0:
 		return
 	var src = tdi_attack_region
-	var width = 210.0
+	var width = 270.0
 	var height = width * src.size.y / src.size.x
 	draw_sheet_region(enemy_sheet, src, px - 90.0, FLOOR_Y - height, width, height, player_x < 22950.0)
 	draw_rect(Rect2(880, 178, 350, 18), Color("#211019"))
@@ -639,6 +708,8 @@ func draw_player():
 		else:
 			tex = hc_run3
 	var width = 118.0
+	if not player_grounded:
+		width = 132.0
 	var height = width * float(tex.get_height()) / float(tex.get_width())
 	var bottom = FLOOR_Y
 	if not player_grounded:
@@ -649,6 +720,15 @@ func draw_player():
 		draw_set_transform(Vector2(0, 0), 0.0, Vector2(1.0, 1.0))
 	else:
 		draw_texture_rect(tex, Rect2(px - 38.0, bottom - height + get_shake_y(), width, height), false)
+
+	if jump_burst_time > 0.0:
+		var a = jump_burst_time / 0.18
+		draw_circle(Vector2(px + 5.0, FLOOR_Y - 5.0), 24.0 * a, Color(1.0, 0.94, 0.25, 0.18 * a))
+		draw_circle(Vector2(px + 54.0, FLOOR_Y - 5.0), 17.0 * a, Color(1.0, 0.18, 0.58, 0.16 * a))
+	if landing_burst_time > 0.0:
+		var la = landing_burst_time / 0.20
+		draw_line(Vector2(px - 42.0, FLOOR_Y - 2.0), Vector2(px + 112.0, FLOOR_Y - 2.0), Color(0.54, 1.0, 0.17, 0.65 * la), 5.0)
+		draw_circle(Vector2(px + 34.0, FLOOR_Y - 3.0), 42.0 * la, Color(1.0, 0.18, 0.58, 0.10 * la))
 
 func draw_hud():
 	draw_rect(Rect2(0, 0, 1280, 108), Color("#050508f5"))
@@ -694,7 +774,7 @@ func draw_mission_overlay():
 		draw_rect(Rect2(0, 0, 1280, 625), Color("#050508e8"))
 		draw_string(ThemeDB.fallback_font, Vector2(110, 245), "TTD: DEATH RUN", HORIZONTAL_ALIGNMENT_LEFT, -1, 58, Color("#f3efe8"))
 		draw_string(ThemeDB.fallback_font, Vector2(112, 300), "STAGE 01 // VHS QUARTER", HORIZONTAL_ALIGNMENT_LEFT, -1, 30, Color("#ff2d95"))
-		draw_string(ThemeDB.fallback_font, Vector2(112, 355), "DESTROY THE RELAYS. REACH VHS PALACE. SURVIVE TBN.", HORIZONTAL_ALIGNMENT_LEFT, -1, 21, Color("#8aff2b"))
+		draw_string(ThemeDB.fallback_font, Vector2(112, 355), "MISSION // KILL THE SIGNAL. BREAK THE FEED. REACH VHS PALACE.", HORIZONTAL_ALIGNMENT_LEFT, -1, 21, Color("#8aff2b"))
 	elif mission_text_timer > 0.0:
 		draw_rect(Rect2(370, 190, 540, 92), Color("#050508dc"))
 		draw_rect(Rect2(370, 190, 540, 92), Color("#ff2d95"), false, 2.0)
