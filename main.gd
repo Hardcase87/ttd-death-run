@@ -19,6 +19,9 @@ var level_bg = preload("res://assets/backgrounds/vhs_quarter_neon_background.png
 var environment_sheet = preload("res://assets/environment/neon_vhs_palace_asset_sheet.png")
 var enemy_sheet = preload("res://assets/enemies/neon_cyberpunk_enemy_sprite_sheet.png")
 var hud_sheet = preload("res://assets/hud/neon_vhs_cyberpunk_hud_asset_sheet.png")
+var drop_health_tex = preload("res://assets/sprites/enemies/enemy_07.png")
+var drop_ammo_tex = preload("res://assets/sprites/enemies/enemy_08.png")
+var hazard_tex = preload("res://assets/sprites/enemies/enemy_09.png")
 
 var music_stream = preload("res://audio/ttd_vhs_assault.wav")
 var sfx_shoot = preload("res://audio/drrrt.wav")
@@ -79,6 +82,7 @@ var player_health = 100
 var player_lives = 3
 var ammo = 90
 var smash_timer = 0.0
+var smash_id = 0
 var hurt_timer = 0.0
 var shoot_timer = 0.0
 var shoot_anim_timer = 0.0
@@ -104,6 +108,13 @@ var boss_started = false
 var boss_hp = 18
 var boss_x = 30950.0
 var boss_attack_timer = 0.0
+var boss_charge_timer = 0.0
+var boss_flash_timer = 0.0
+var boss_velocity = 0.0
+var boss_death_spawned = false
+var collapse_active = false
+var collapse_timer = 0.0
+var collapse_pulse = 0.0
 
 # COMBAT FEEL / SCORE
 var shots_fired = 0
@@ -130,6 +141,41 @@ var spark_t = []
 var burst_x = []
 var burst_y = []
 var burst_t = []
+
+# Physical combat debris. These tiny bodies are deliberately pooled as arrays so
+# mobile builds get the violence without a node explosion.
+var debris_pos = []
+var debris_vel = []
+var debris_t = []
+var debris_size = []
+var debris_color = []
+var debris_angle = []
+var debris_spin = []
+
+# Enemy and prop drops arc into the world, bounce, then hover until collected.
+var drop_pos = []
+var drop_vel = []
+var drop_type = []
+var drop_alive = []
+var drop_age = []
+
+# Breakable street furniture turns the background into a combat space.
+var prop_x = [
+	2050.0, 4380.0, 6720.0, 9050.0, 11850.0, 13820.0,
+	17620.0, 20150.0, 23180.0, 25350.0, 27880.0, 29820.0
+]
+var prop_type = [0,1,2,0,1,2, 0,1,2,0,1,2]
+var prop_hp = [2,3,2,2,3,2, 3,3,2,3,4,3]
+var prop_alive = [true,true,true,true,true,true,true,true,true,true,true,true]
+var prop_last_smashed = []
+
+var enemy_last_smashed = []
+var enemy_hit_timer = []
+
+# TBN Executioner projectiles.
+var hostile_shot_pos = []
+var hostile_shot_vel = []
+var hostile_shot_alive = []
 
 var touch_left = false
 var touch_right = false
@@ -191,6 +237,7 @@ var pickup_type = [0, 1, 0, 1, 0, 1, 0]
 var pickup_alive = [true,true,true,true,true,true,true]
 
 func _ready():
+	seed(87)
 	music_player = AudioStreamPlayer.new()
 	sfx_a = AudioStreamPlayer.new()
 	sfx_b = AudioStreamPlayer.new()
@@ -201,6 +248,12 @@ func _ready():
 	add_child(sfx_c)
 	music_player.stream = music_stream
 	music_player.volume_db = -10.0
+	enemy_last_smashed.resize(enemy_x.size())
+	enemy_last_smashed.fill(-1)
+	enemy_hit_timer.resize(enemy_x.size())
+	enemy_hit_timer.fill(0.0)
+	prop_last_smashed.resize(prop_x.size())
+	prop_last_smashed.fill(-1)
 	queue_redraw()
 
 func play_sfx(stream, volume_db):
@@ -287,6 +340,8 @@ func _process(delta):
 	combo_timer = max(0.0, combo_timer - delta)
 	encounter_text_timer = max(0.0, encounter_text_timer - delta)
 	boss_attack_timer = max(0.0, boss_attack_timer - delta)
+	boss_charge_timer = max(0.0, boss_charge_timer - delta)
+	boss_flash_timer = max(0.0, boss_flash_timer - delta)
 	if combo_timer <= 0.0:
 		combo = 0
 	update_fx(delta)
@@ -301,19 +356,25 @@ func _process(delta):
 
 	for i in range(enemy_attack_timer.size()):
 		enemy_attack_timer[i] = max(0.0, enemy_attack_timer[i] - delta)
+		enemy_hit_timer[i] = max(0.0, enemy_hit_timer[i] - delta)
 
 	handle_input(delta)
 	update_player(delta)
 	update_bullets(delta)
 	update_enemies(delta)
+	update_breakables()
 	update_relays()
 	update_pickups()
+	update_drops(delta)
+	update_hostile_shots(delta)
 	update_checkpoints()
 	update_encounters()
-	update_boss()
+	update_boss(delta)
+	update_collapse(delta)
 
-	var target_camera = clamp(player_x - 360.0, 0.0, WORLD_W - 1280.0)
-	camera_x = lerp(camera_x, target_camera, min(1.0, delta * 6.5))
+	var camera_look = player_facing * 82.0 + clamp(player_vx * 0.12, -55.0, 55.0)
+	var target_camera = clamp(player_x - 360.0 + camera_look, 0.0, WORLD_W - 1280.0)
+	camera_x = lerp(camera_x, target_camera, min(1.0, delta * 7.5))
 	queue_redraw()
 
 func handle_input(delta):
@@ -350,6 +411,7 @@ func handle_input(delta):
 
 	if smash_pressed and smash_timer <= 0.0:
 		smash_timer = 0.30
+		smash_id += 1
 		play_sfx(sfx_smash, -5.0)
 
 	var fire_pressed = Input.is_key_pressed(KEY_K) or touch_shoot
@@ -369,6 +431,11 @@ func fire_bullet():
 	bullet_y.append(player_y + 24.0)
 	bullet_dir.append(player_facing)
 	bullet_alive.append(true)
+	add_debris_piece(
+		Vector2(bx - player_facing * 34.0, player_y + 40.0),
+		Vector2(-player_facing * randf_range(80.0, 145.0), randf_range(-330.0, -220.0)),
+		0.72, Vector2(9.0, 4.0), Color("#fff04a"), randf_range(-9.0, 9.0)
+	)
 	play_sfx(sfx_shoot, -8.0)
 	kick_camera(0.035, 2.0)
 
@@ -413,6 +480,8 @@ func update_bullets(delta):
 				continue
 			if abs(bullet_x[b] - enemy_x[i]) < 96.0 and abs(bullet_y[b] - (FLOOR_Y - 70.0)) < 85.0:
 				enemy_hp[i] -= 1
+				enemy_hit_timer[i] = 0.11
+				enemy_x[i] += bullet_dir[b] * 18.0
 				bullet_alive[b] = false
 				shots_hit += 1
 				score += 50
@@ -422,9 +491,21 @@ func update_bullets(delta):
 				hitstop_timer = 0.018
 				if enemy_hp[i] <= 0:
 					enemy_alive[i] = false
-					register_kill(enemy_x[i])
+					register_kill(enemy_x[i], enemy_type[i], bullet_dir[b])
 					play_sfx(sfx_death, -6.0)
 					kick_camera(0.14, 9.0)
+
+		for p in range(prop_x.size()):
+			if not prop_alive[p] or not bullet_alive[b]:
+				continue
+			if abs(bullet_x[b] - prop_x[p]) < 72.0 and bullet_y[b] > FLOOR_Y - 155.0:
+				prop_hp[p] -= 1
+				bullet_alive[b] = false
+				shots_hit += 1
+				add_spark(prop_x[p], FLOOR_Y - 68.0)
+				play_sfx(sfx_hit, -10.0)
+				if prop_hp[p] <= 0:
+					break_prop(p, bullet_dir[b])
 
 		for r in range(relay_x.size()):
 			if relay_alive[r] and bullet_alive[b] and abs(bullet_x[b] - relay_x[r]) < 75.0:
@@ -452,11 +533,14 @@ func update_bullets(delta):
 			if boss_hp <= 0:
 				score += 5000
 				kills += 1
-				add_burst(boss_x, FLOOR_Y - 120.0)
+				spawn_enemy_death(boss_x, 1, bullet_dir[b], true)
 				encounter_text = "EXECUTIONER TERMINATED"
 				encounter_text_timer = 2.8
 				play_sfx(sfx_death, -1.0)
 				kick_camera(0.72, 25.0)
+				boss_death_spawned = true
+				collapse_active = true
+				collapse_timer = 8.0
 
 func update_enemies(delta):
 	for i in range(enemy_x.size()):
@@ -488,14 +572,16 @@ func update_enemies(delta):
 
 		if touching:
 			enemy_attack_timer[i] = 0.25
-			if smash_timer > 0.0:
+			if smash_timer > 0.0 and enemy_last_smashed[i] != smash_id:
+				enemy_last_smashed[i] = smash_id
 				enemy_hp[i] -= 2
+				enemy_hit_timer[i] = 0.14
 				enemy_x[i] += player_facing * 105.0
 				kick_camera(0.14, 9.0)
 				flash_time = 0.06
 				if enemy_hp[i] <= 0:
 					enemy_alive[i] = false
-					register_kill(enemy_x[i])
+					register_kill(enemy_x[i], enemy_type[i], player_facing)
 					play_sfx(sfx_death, -6.0)
 			elif hurt_timer <= 0.0:
 				var damage = 10
@@ -510,8 +596,41 @@ func update_enemies(delta):
 				if player_health <= 0:
 					lose_life()
 
+func update_breakables():
+	if smash_timer <= 0.0:
+		return
+	var impact_x = player_x + player_facing * 82.0
+	for i in range(prop_x.size()):
+		if not prop_alive[i] or prop_last_smashed[i] == smash_id:
+			continue
+		if abs(impact_x - prop_x[i]) < 118.0:
+			prop_last_smashed[i] = smash_id
+			prop_hp[i] -= 2
+			add_spark(prop_x[i], FLOOR_Y - 72.0)
+			kick_camera(0.12, 8.0)
+			if prop_hp[i] <= 0:
+				break_prop(i, player_facing)
+
+func break_prop(index, direction):
+	prop_alive[index] = false
+	score += 300
+	add_burst(prop_x[index], FLOOR_Y - 65.0)
+	for n in range(10):
+		var color = Color("#ff2d95") if n % 3 == 0 else Color("#2b2535")
+		if prop_type[index] == 1 and n % 2 == 0:
+			color = Color("#8aff2b")
+		add_debris_piece(
+			Vector2(prop_x[index] + randf_range(-34.0, 34.0), FLOOR_Y - randf_range(35.0, 105.0)),
+			Vector2(direction * randf_range(110.0, 390.0) + randf_range(-95.0, 95.0), randf_range(-720.0, -260.0)),
+			randf_range(0.8, 1.6), Vector2(randf_range(8.0, 24.0), randf_range(6.0, 18.0)), color, randf_range(-12.0, 12.0)
+		)
+	spawn_drop(prop_x[index], index % 2)
+	play_sfx(sfx_smash, -7.0)
+
 func update_relays():
-	pass
+	# Relay state is intentionally lightweight; damage and wave logic live in the
+	# projectile and encounter passes. Keeping this hook makes later relay types safe.
+	return
 
 func update_pickups():
 	for i in range(pickup_x.size()):
@@ -524,7 +643,73 @@ func update_pickups():
 			else:
 				player_health = min(100, player_health + 35)
 			score += 250
+			add_burst(pickup_x[i], FLOOR_Y - 42.0)
 			play_sfx(sfx_pickup, -5.0)
+
+func spawn_drop(world_x, kind = -1):
+	var chosen = kind
+	if chosen < 0:
+		chosen = 0 if ammo < 52 else 1
+	drop_pos.append(Vector2(world_x, FLOOR_Y - 92.0))
+	drop_vel.append(Vector2(randf_range(-145.0, 145.0), randf_range(-690.0, -470.0)))
+	drop_type.append(chosen)
+	drop_alive.append(true)
+	drop_age.append(0.0)
+
+func update_drops(delta):
+	for i in range(drop_pos.size()):
+		if not drop_alive[i]:
+			continue
+		drop_age[i] += delta
+		var pos = drop_pos[i]
+		var vel = drop_vel[i]
+		pos += vel * delta
+		vel.y += 1480.0 * delta
+		if pos.y > FLOOR_Y - 33.0:
+			pos.y = FLOOR_Y - 33.0
+			if abs(vel.y) > 105.0:
+				vel.y *= -0.38
+				vel.x *= 0.72
+			else:
+				vel.y = 0.0
+				vel.x = move_toward(vel.x, 0.0, 420.0 * delta)
+		drop_pos[i] = pos
+		drop_vel[i] = vel
+		if drop_age[i] > 0.28 and abs(player_x - pos.x) < 72.0 and abs((player_y + 90.0) - pos.y) < 95.0:
+			drop_alive[i] = false
+			if drop_type[i] == 0:
+				ammo = min(MAX_AMMO, ammo + 34)
+			else:
+				player_health = min(100, player_health + 30)
+			score += 400
+			add_burst(pos.x, pos.y)
+			play_sfx(sfx_pickup, -3.0)
+
+func spawn_hostile_shot(origin, velocity):
+	hostile_shot_pos.append(origin)
+	hostile_shot_vel.append(velocity)
+	hostile_shot_alive.append(true)
+
+func update_hostile_shots(delta):
+	for i in range(hostile_shot_pos.size()):
+		if not hostile_shot_alive[i]:
+			continue
+		var pos = hostile_shot_pos[i]
+		pos += hostile_shot_vel[i] * delta
+		hostile_shot_pos[i] = pos
+		if pos.x < camera_x - 160.0 or pos.x > camera_x + 1480.0:
+			hostile_shot_alive[i] = false
+			continue
+		if abs(pos.x - player_x) < 52.0 and abs(pos.y - (player_y + 58.0)) < 72.0:
+			hostile_shot_alive[i] = false
+			add_spark(pos.x, pos.y)
+			if hurt_timer <= 0.0:
+				player_health -= 16
+				hurt_timer = 0.72
+				player_vx = -sign(boss_x - player_x) * 290.0
+				kick_camera(0.16, 10.0)
+				if player_health <= 0:
+					lose_life()
 
 func update_checkpoints():
 	if player_x > 7800.0 and checkpoint_index < 1:
@@ -540,14 +725,77 @@ func update_checkpoints():
 		checkpoint = 24500.0
 		mission_text_timer = 2.5
 
-func update_boss():
+func update_boss(delta):
 	if player_x > 30100.0 and not boss_started:
 		if not relay_alive[0] and not relay_alive[1]:
 			boss_started = true
+			boss_attack_timer = 1.1
 			mission_text_timer = 4.0
 			play_sfx(sfx_boss, -2.0)
+			encounter_text = "TBN EXECUTIONER // LIVE FIRE"
+			encounter_text_timer = 2.8
+			kick_camera(0.35, 14.0)
 		else:
 			player_x = min(player_x, 30070.0)
+
+	if not boss_started or boss_hp <= 0 or stage_finished:
+		return
+
+	var dx = player_x - boss_x
+	var phase_two = boss_hp <= 9
+	if boss_charge_timer > 0.0:
+		boss_velocity = sign(dx) * (560.0 if phase_two else 450.0)
+	else:
+		var desired = sign(dx) * (118.0 if abs(dx) > 285.0 else 0.0)
+		boss_velocity = move_toward(boss_velocity, desired, 620.0 * delta)
+		if boss_attack_timer <= 0.0:
+			boss_flash_timer = 0.16
+			if phase_two and randi() % 3 == 0:
+				boss_charge_timer = 0.52
+				boss_attack_timer = 1.05
+				play_sfx(sfx_smash, -5.0)
+			else:
+				var shot_dir = sign(dx)
+				if shot_dir == 0.0:
+					shot_dir = -1.0
+				var origin = Vector2(boss_x + shot_dir * 22.0, FLOOR_Y - 118.0)
+				spawn_hostile_shot(origin, Vector2(shot_dir * 620.0, -72.0))
+				spawn_hostile_shot(origin, Vector2(shot_dir * 690.0, 0.0))
+				if phase_two:
+					spawn_hostile_shot(origin, Vector2(shot_dir * 640.0, 82.0))
+				boss_attack_timer = 0.72 if phase_two else 1.18
+				play_sfx(sfx_shoot, -5.0)
+				kick_camera(0.08, 5.0)
+
+	boss_x += boss_velocity * delta
+	boss_x = clamp(boss_x, 29820.0, 31620.0)
+	if abs(dx) < 118.0 and hurt_timer <= 0.0:
+		player_health -= 20 if phase_two else 15
+		hurt_timer = 0.82
+		player_vx = -sign(boss_x - player_x) * 390.0
+		kick_camera(0.20, 13.0)
+		if player_health <= 0:
+			lose_life()
+
+func update_collapse(delta):
+	if not collapse_active or stage_finished:
+		return
+	collapse_timer = max(0.0, collapse_timer - delta)
+	collapse_pulse -= delta
+	if collapse_pulse <= 0.0:
+		collapse_pulse = 0.16
+		var impact_x = camera_x + randf_range(220.0, 1240.0)
+		add_burst(impact_x, randf_range(235.0, FLOOR_Y - 45.0))
+		for n in range(3):
+			add_debris_piece(
+				Vector2(impact_x + randf_range(-55.0, 55.0), randf_range(120.0, 340.0)),
+				Vector2(randf_range(-260.0, 260.0), randf_range(-260.0, 110.0)),
+				randf_range(0.55, 1.15), Vector2(randf_range(8.0, 21.0), randf_range(7.0, 18.0)),
+				Color("#ff2d95") if n == 0 else Color("#30273b"), randf_range(-11.0, 11.0)
+			)
+		kick_camera(0.08, randf_range(3.0, 7.0))
+	if collapse_timer <= 0.0:
+		collapse_active = false
 
 func spawn_enemy(world_x, kind, hp):
 	enemy_home.append(world_x)
@@ -556,6 +804,8 @@ func spawn_enemy(world_x, kind, hp):
 	enemy_hp.append(hp)
 	enemy_alive.append(true)
 	enemy_attack_timer.append(0.0)
+	enemy_last_smashed.append(-1)
+	enemy_hit_timer.append(0.0)
 
 func update_encounters():
 	for i in range(ambush_x.size()):
@@ -580,7 +830,7 @@ func update_encounters():
 			play_sfx(sfx_boss, -7.0)
 			kick_camera(0.22, 11.0)
 
-func register_kill(world_x):
+func register_kill(world_x, kind, direction):
 	kills += 1
 	combo += 1
 	combo_timer = 2.2
@@ -588,7 +838,7 @@ func register_kill(world_x):
 		best_combo = combo
 	var bonus = 400 + combo * 125
 	score += bonus
-	add_burst(world_x, FLOOR_Y - 85.0)
+	spawn_enemy_death(world_x, kind, direction)
 	if combo == 3:
 		encounter_text = "TRIPLE KILL // TBN CONCERNED"
 		encounter_text_timer = 1.6
@@ -598,6 +848,25 @@ func register_kill(world_x):
 	elif combo == 8:
 		encounter_text = "DEATH RUN // UNHINGED x8"
 		encounter_text_timer = 2.0
+
+func spawn_enemy_death(world_x, kind, direction, is_boss = false):
+	add_burst(world_x, FLOOR_Y - 85.0)
+	var palette = [Color("#ff2d95"), Color("#8aff2b"), Color("#fff04a"), Color("#241d2b")]
+	var count = 22 if is_boss else 11
+	for n in range(count):
+		var force = randf_range(150.0, 520.0) * direction
+		if n % 4 == 0:
+			force *= -0.45
+		var piece_scale = 1.45 if is_boss else 1.0
+		add_debris_piece(
+			Vector2(world_x + randf_range(-42.0, 42.0), FLOOR_Y - randf_range(48.0, 142.0)),
+			Vector2(force + randf_range(-120.0, 120.0), randf_range(-920.0, -250.0)),
+			randf_range(0.85, 1.75),
+			Vector2(randf_range(7.0, 20.0), randf_range(6.0, 18.0)) * piece_scale,
+			palette[(n + kind) % palette.size()], randf_range(-14.0, 14.0)
+		)
+	if is_boss or kills % 2 == 0:
+		spawn_drop(world_x, -1)
 
 func add_spark(world_x, world_y):
 	spark_x.append(world_x)
@@ -609,11 +878,38 @@ func add_burst(world_x, world_y):
 	burst_y.append(world_y)
 	burst_t.append(0.42)
 
+func add_debris_piece(position, velocity, life, size, color, spin):
+	debris_pos.append(position)
+	debris_vel.append(velocity)
+	debris_t.append(life)
+	debris_size.append(size)
+	debris_color.append(color)
+	debris_angle.append(randf_range(-PI, PI))
+	debris_spin.append(spin)
+
 func update_fx(delta):
 	for i in range(spark_t.size()):
 		spark_t[i] = max(0.0, spark_t[i] - delta)
 	for i in range(burst_t.size()):
 		burst_t[i] = max(0.0, burst_t[i] - delta)
+	for i in range(debris_t.size()):
+		if debris_t[i] <= 0.0:
+			continue
+		debris_t[i] = max(0.0, debris_t[i] - delta)
+		var pos = debris_pos[i]
+		var vel = debris_vel[i]
+		pos += vel * delta
+		vel.y += 1650.0 * delta
+		if pos.y > FLOOR_Y - 4.0:
+			pos.y = FLOOR_Y - 4.0
+			if abs(vel.y) > 130.0:
+				vel.y *= -0.31
+				vel.x *= 0.68
+			else:
+				vel = Vector2.ZERO
+		debris_pos[i] = pos
+		debris_vel[i] = vel
+		debris_angle[i] += debris_spin[i] * delta
 
 func draw_combat_fx():
 	for i in range(spark_t.size()):
@@ -635,6 +931,21 @@ func draw_combat_fx():
 		draw_circle(Vector2(bx, by), 52.0 * (1.0 - a), Color(1.0, 0.15, 0.50, 0.22 * a))
 		draw_line(Vector2(bx - 48.0, by), Vector2(bx + 48.0, by), Color(0.54, 1.0, 0.17, a), 5.0)
 		draw_line(Vector2(bx, by - 42.0), Vector2(bx, by + 42.0), Color(1.0, 0.90, 0.2, a), 4.0)
+
+	for i in range(debris_t.size()):
+		if debris_t[i] <= 0.0:
+			continue
+		var pos = debris_pos[i]
+		var px = pos.x - camera_x
+		if px < -80.0 or px > 1360.0:
+			continue
+		var alpha = clamp(debris_t[i] * 1.7, 0.0, 1.0)
+		var color = debris_color[i]
+		color.a = alpha
+		draw_set_transform(Vector2(px, pos.y), debris_angle[i], Vector2.ONE)
+		draw_rect(Rect2(-debris_size[i] * 0.5, debris_size[i]), color)
+		draw_rect(Rect2(-debris_size[i] * 0.5, debris_size[i]), Color(0.05, 0.03, 0.08, alpha), false, 2.0)
+		draw_set_transform(Vector2.ZERO, 0.0, Vector2.ONE)
 
 func lose_life():
 	player_lives -= 1
@@ -680,14 +991,18 @@ func _draw():
 
 	draw_level_background()
 	draw_level_environment()
+	draw_breakables()
 	draw_relays()
 	draw_pickups()
+	draw_drops()
 	draw_enemies()
 	draw_bullets()
 	draw_boss()
+	draw_hostile_shots()
 	draw_combat_fx()
 	draw_player()
 	draw_foreground()
+	draw_atmosphere_overlay()
 	draw_hud()
 	draw_controls()
 	draw_mission_overlay()
@@ -727,17 +1042,49 @@ func draw_title_screen():
 	draw_rect(Rect2(0, 650, 1280, 70), Color("#050508ef"))
 	draw_string(ThemeDB.fallback_font, Vector2(34, 692), "TBN LIVE // RATINGS UP // CASUALTY FORECAST: EXCELLENT", HORIZONTAL_ALIGNMENT_LEFT, -1, 17, Color("#ff2d95"))
 
+func draw_oval(center, radii, color):
+	if radii.x <= 0.0 or radii.y <= 0.0:
+		return
+	draw_set_transform(center, 0.0, Vector2(radii.x / radii.y, 1.0))
+	draw_circle(Vector2.ZERO, radii.y, color)
+	draw_set_transform(Vector2.ZERO, 0.0, Vector2.ONE)
+
 func draw_level_background():
-	draw_rect(Rect2(0, 0, 1280, 720), Color("#07050e"))
-	var bg_scale = 0.63
+	draw_rect(Rect2(0, 0, 1280, 720), Color("#05030a"))
+
+	# A wider, alternating panorama removes the obvious wallpaper seam while the
+	# slow camera ratio keeps Titan City feeling enormous behind the combat lane.
+	var bg_scale = 0.78
 	var bg_w = float(level_bg.get_width()) * bg_scale
 	var bg_h = float(level_bg.get_height()) * bg_scale
-	var bg_shift = -fmod(camera_x * 0.055, bg_w)
-	var bg_y = 100.0
-	draw_texture_rect(level_bg, Rect2(bg_shift + get_shake_x() * 0.25, bg_y, bg_w, bg_h), false)
-	draw_texture_rect(level_bg, Rect2(bg_shift + bg_w + get_shake_x() * 0.25, bg_y, bg_w, bg_h), false)
-	draw_rect(Rect2(0, FLOOR_Y - 22.0, 1280, 47.0), Color("#09070db5"))
-	draw_line(Vector2(0, FLOOR_Y), Vector2(1280, FLOOR_Y), Color("#ff2d95"), 2.0)
+	var parallax_x = camera_x * 0.105
+	var first_tile = int(floor(parallax_x / bg_w)) - 1
+	var bg_y = -88.0
+	for n in range(4):
+		var tile = first_tile + n
+		var screen_x = tile * bg_w - parallax_x + get_shake_x() * 0.18
+		if tile % 2 == 0:
+			draw_texture_rect(level_bg, Rect2(screen_x, bg_y, bg_w, bg_h), false)
+		else:
+			draw_set_transform(Vector2(screen_x + bg_w, 0.0), 0.0, Vector2(-1.0, 1.0))
+			draw_texture_rect(level_bg, Rect2(0.0, bg_y, bg_w, bg_h), false)
+			draw_set_transform(Vector2.ZERO, 0.0, Vector2.ONE)
+
+	# Haze bands and a unified road grade bind the generated panorama to gameplay.
+	draw_rect(Rect2(0, 255, 1280, 120), Color(0.20, 0.02, 0.25, 0.10))
+	draw_rect(Rect2(0, 390, 1280, 150), Color(0.02, 0.01, 0.05, 0.14))
+	draw_rect(Rect2(0, FLOOR_Y - 44.0, 1280, 69.0), Color("#07050dcc"))
+	for i in range(9):
+		var puddle_world = 430.0 + i * 1710.0
+		var puddle_x = fmod(puddle_world - camera_x * 0.92, 15390.0)
+		if puddle_x < -180.0:
+			puddle_x += 15390.0
+		if puddle_x < 1370.0:
+			var glow = Color("#ff2d95") if i % 2 == 0 else Color("#8aff2b")
+			glow.a = 0.12
+			draw_oval(Vector2(puddle_x, FLOOR_Y + 2.0), Vector2(85.0, 7.0), glow)
+	draw_line(Vector2(0, FLOOR_Y), Vector2(1280, FLOOR_Y), Color("#ff2d95aa"), 2.0)
+	draw_line(Vector2(0, FLOOR_Y + 6.0), Vector2(1280, FLOOR_Y + 6.0), Color("#8aff2b33"), 1.0)
 
 func draw_level_environment():
 	for sector in range(11):
@@ -763,6 +1110,12 @@ func draw_env_region(src, world_x, bottom_y, width):
 	var px = world_x - camera_x + get_shake_x()
 	if px < -width - 30.0 or px > 1310.0:
 		return
+	if bottom_y >= FLOOR_Y - 1.0:
+		draw_oval(Vector2(px + width * 0.50, FLOOR_Y - 1.0 + get_shake_y()), Vector2(width * 0.43, max(5.0, width * 0.055)), Color(0.0, 0.0, 0.0, 0.48))
+		if src == env_toxic_barrels or src == env_arcade:
+			var glow_color = Color("#8aff2b") if src == env_toxic_barrels else Color("#ff2d95")
+			glow_color.a = 0.075
+			draw_oval(Vector2(px + width * 0.50, FLOOR_Y - 5.0), Vector2(width * 0.54, width * 0.13), glow_color)
 	draw_texture_rect_region(environment_sheet, Rect2(px, bottom_y - height + get_shake_y(), width, height), src)
 
 func draw_relays():
@@ -783,6 +1136,28 @@ func draw_relays():
 			maxhp = 10.0
 		draw_rect(Rect2(px - 15.0, FLOOR_Y - 210.0, 170.0 * relay_hp[i] / maxhp, 16.0), Color("#8aff2b"))
 
+func draw_breakables():
+	for i in range(prop_x.size()):
+		if not prop_alive[i]:
+			continue
+		var px = prop_x[i] - camera_x + get_shake_x()
+		if px < -150.0 or px > 1370.0:
+			continue
+		var src = env_vhs_crates
+		var width = 118.0
+		if prop_type[i] == 1:
+			src = env_toxic_barrels
+			width = 86.0
+		elif prop_type[i] == 2:
+			src = env_crt_stack
+			width = 105.0
+		var height = width * src.size.y / src.size.x
+		draw_oval(Vector2(px + width * 0.5, FLOOR_Y - 1.0), Vector2(width * 0.48, 8.0), Color(0.0, 0.0, 0.0, 0.62))
+		var pulse = 0.38 + 0.18 * sin(game_time * 3.4 + i)
+		draw_oval(Vector2(px + width * 0.5, FLOOR_Y - height * 0.35), Vector2(width * 0.55, height * 0.48), Color(1.0, 0.18, 0.58, 0.045 * pulse))
+		draw_texture_rect_region(environment_sheet, Rect2(px, FLOOR_Y - height + get_shake_y(), width, height), src)
+		draw_rect(Rect2(px + 5.0, FLOOR_Y - height + 5.0, width - 10.0, height - 10.0), Color(1.0, 0.94, 0.25, 0.22), false, 2.0)
+
 func draw_pickups():
 	for i in range(pickup_x.size()):
 		if not pickup_alive[i]:
@@ -791,6 +1166,25 @@ func draw_pickups():
 			draw_env_region(env_tape, pickup_x[i], FLOOR_Y, 62.0)
 		else:
 			draw_env_region(env_toxic_barrels, pickup_x[i], FLOOR_Y, 62.0)
+
+func draw_drops():
+	for i in range(drop_pos.size()):
+		if not drop_alive[i]:
+			continue
+		var pos = drop_pos[i]
+		var px = pos.x - camera_x
+		if px < -100.0 or px > 1380.0:
+			continue
+		var grounded = abs(drop_vel[i].y) < 1.0
+		var bob = sin(game_time * 5.5 + i) * 5.0 if grounded else 0.0
+		var tex = drop_ammo_tex if drop_type[i] == 0 else drop_health_tex
+		var glow = Color("#fff04a") if drop_type[i] == 0 else Color("#8aff2b")
+		glow.a = 0.18 + 0.08 * abs(sin(game_time * 4.2 + i))
+		draw_oval(Vector2(px, FLOOR_Y - 1.0), Vector2(33.0, 7.0), Color(0.0, 0.0, 0.0, 0.58))
+		draw_circle(Vector2(px, pos.y + bob), 38.0, glow)
+		draw_set_transform(Vector2(px, pos.y + bob), sin(drop_age[i] * 8.0) * 0.09, Vector2.ONE)
+		draw_texture_rect(tex, Rect2(-34.0, -34.0, 68.0, 68.0), false)
+		draw_set_transform(Vector2.ZERO, 0.0, Vector2.ONE)
 
 func get_enemy_region(i):
 	var t = enemy_type[i]
@@ -830,15 +1224,17 @@ func draw_enemies():
 			width = 285.0
 		var height = width * src.size.y / src.size.x
 		var facing_left = player_x < enemy_x[i]
-		draw_sheet_region(enemy_sheet, src, px - width * 0.42, FLOOR_Y - height + get_shake_y(), width, height, facing_left)
+		draw_oval(Vector2(px + width * 0.05, FLOOR_Y - 1.0), Vector2(width * 0.30, 9.0), Color(0.0, 0.0, 0.0, 0.64))
+		var hit_modulate = Color(1.75, 1.75, 1.75, 1.0) if enemy_hit_timer[i] > 0.0 else Color.WHITE
+		draw_sheet_region(enemy_sheet, src, px - width * 0.42, FLOOR_Y - height + get_shake_y(), width, height, facing_left, hit_modulate)
 
-func draw_sheet_region(tex, src, x, y, width, height, flip_x):
+func draw_sheet_region(tex, src, x, y, width, height, flip_x, modulate = Color.WHITE):
 	if flip_x:
 		draw_set_transform(Vector2(x + width, 0), 0.0, Vector2(-1.0, 1.0))
-		draw_texture_rect_region(tex, Rect2(0, y, width, height), src)
+		draw_texture_rect_region(tex, Rect2(0, y, width, height), src, modulate)
 		draw_set_transform(Vector2(0, 0), 0.0, Vector2(1.0, 1.0))
 	else:
-		draw_texture_rect_region(tex, Rect2(x, y, width, height), src)
+		draw_texture_rect_region(tex, Rect2(x, y, width, height), src, modulate)
 
 func draw_bullets():
 	if muzzle_flash_timer > 0.0:
@@ -870,10 +1266,33 @@ func draw_boss():
 	var src = tdi_attack_region
 	var width = 390.0
 	var height = width * src.size.y / src.size.x
-	draw_sheet_region(enemy_sheet, src, px - 90.0, FLOOR_Y - height, width, height, player_x < boss_x)
+	draw_oval(Vector2(px + 78.0, FLOOR_Y - 2.0), Vector2(125.0, 14.0), Color(0.0, 0.0, 0.0, 0.72))
+	var phase_color = Color("#ff2d95") if boss_hp > 9 else Color("#8aff2b")
+	var glow_color = phase_color
+	glow_color.a = 0.14 + 0.06 * abs(sin(game_time * 7.0))
+	draw_oval(Vector2(px + 70.0, FLOOR_Y - 100.0), Vector2(150.0, 116.0), glow_color)
+	if boss_charge_timer > 0.0:
+		for trail in range(3):
+			var trail_alpha = 0.18 - trail * 0.045
+			draw_sheet_region(enemy_sheet, src, px - 90.0 - sign(boss_velocity) * (trail + 1) * 28.0, FLOOR_Y - height, width, height, player_x < boss_x, Color(1.0, 0.18, 0.58, trail_alpha))
+	var boss_modulate = Color(2.0, 2.0, 2.0, 1.0) if boss_flash_timer > 0.0 else Color.WHITE
+	draw_sheet_region(enemy_sheet, src, px - 90.0, FLOOR_Y - height, width, height, player_x < boss_x, boss_modulate)
 	draw_rect(Rect2(880, 178, 350, 18), Color("#211019"))
 	draw_rect(Rect2(880, 178, 350.0 * boss_hp / 18.0, 18), Color("#ff2d95"))
-	draw_string(ThemeDB.fallback_font, Vector2(880, 168), "TBN EXECUTIONER", HORIZONTAL_ALIGNMENT_LEFT, -1, 18, Color("#f3efe8"))
+	var phase_label = "PHASE 1 // SUPPRESSION" if boss_hp > 9 else "PHASE 2 // TERMINATION"
+	draw_string(ThemeDB.fallback_font, Vector2(880, 146), "TBN EXECUTIONER", HORIZONTAL_ALIGNMENT_LEFT, -1, 18, Color("#f3efe8"))
+	draw_string(ThemeDB.fallback_font, Vector2(880, 168), phase_label, HORIZONTAL_ALIGNMENT_LEFT, -1, 14, phase_color)
+
+func draw_hostile_shots():
+	for i in range(hostile_shot_pos.size()):
+		if not hostile_shot_alive[i]:
+			continue
+		var pos = hostile_shot_pos[i]
+		var px = pos.x - camera_x
+		var direction = sign(hostile_shot_vel[i].x)
+		draw_line(Vector2(px - direction * 52.0, pos.y), Vector2(px + direction * 18.0, pos.y), Color(1.0, 0.18, 0.58, 0.46), 8.0)
+		draw_circle(Vector2(px, pos.y), 10.0, Color("#8aff2b"))
+		draw_circle(Vector2(px, pos.y), 4.0, Color("#fff8bc"))
 
 func draw_player():
 	var px = player_x - camera_x + get_shake_x()
@@ -896,19 +1315,32 @@ func draw_player():
 			tex = hc_run2
 		else:
 			tex = hc_run3
-	var width = 118.0
+	# All source frames have different canvases. Anchor by a stable body height and
+	# foot pivot so running, shooting and smashing no longer pop vertically.
+	var height = 176.0
 	if not player_grounded:
-		width = 132.0
-	var height = width * float(tex.get_height()) / float(tex.get_width())
+		height = 190.0
+	elif smash_timer > 0.0:
+		height = 182.0
+	elif stage_finished:
+		height = 188.0
+	var width = height * float(tex.get_width()) / float(tex.get_height())
 	var bottom = FLOOR_Y
 	if not player_grounded:
 		bottom = player_y + 126.0
+	var center_x = px + 24.0
+	var shadow_scale = clamp(1.0 - abs(FLOOR_Y - bottom) / 360.0, 0.38, 1.0)
+	draw_oval(Vector2(center_x, FLOOR_Y - 1.0), Vector2(56.0 * shadow_scale, 10.0 * shadow_scale), Color(0.0, 0.0, 0.0, 0.68 * shadow_scale))
+	if abs(player_vx) > 310.0 and player_grounded:
+		for streak in range(3):
+			var streak_y = FLOOR_Y - 34.0 - streak * 19.0
+			draw_line(Vector2(center_x - player_facing * 48.0, streak_y), Vector2(center_x - player_facing * (92.0 + streak * 14.0), streak_y), Color(1.0, 0.18, 0.58, 0.18 - streak * 0.04), 3.0)
 	if player_facing < 0.0:
-		draw_set_transform(Vector2(px + 80.0, 0), 0.0, Vector2(-1.0, 1.0))
+		draw_set_transform(Vector2(center_x + width * 0.5, 0), 0.0, Vector2(-1.0, 1.0))
 		draw_texture_rect(tex, Rect2(0, bottom - height + get_shake_y(), width, height), false)
 		draw_set_transform(Vector2(0, 0), 0.0, Vector2(1.0, 1.0))
 	else:
-		draw_texture_rect(tex, Rect2(px - 38.0, bottom - height + get_shake_y(), width, height), false)
+		draw_texture_rect(tex, Rect2(center_x - width * 0.5, bottom - height + get_shake_y(), width, height), false)
 
 	if jump_burst_time > 0.0:
 		var a = jump_burst_time / 0.18
@@ -930,6 +1362,21 @@ func draw_foreground():
 		var lx = base + 1650.0 - camera_x * 1.05 + get_shake_x()
 		if lx > -260.0 and lx < 1360.0:
 			draw_texture_rect_region(environment_sheet, Rect2(lx, 330.0, 205.0, 280.0), env_streetlamp)
+
+func draw_atmosphere_overlay():
+	# Cheap deterministic rain, scanlines and edge grade: readable on mobile and
+	# enough motion to make the painted background belong to the live scene.
+	for i in range(28):
+		var rain_x = fmod(i * 97.0 + game_time * 185.0 - camera_x * 0.035, 1360.0) - 40.0
+		var rain_y = fmod(i * 61.0 + game_time * 470.0, FLOOR_Y - 80.0) + 72.0
+		draw_line(Vector2(rain_x, rain_y), Vector2(rain_x - 12.0, rain_y + 31.0), Color(0.62, 0.76, 1.0, 0.13), 1.5)
+	for y in range(118, int(CONTROL_TOP), 10):
+		draw_line(Vector2(0, y), Vector2(1280, y), Color(0.0, 0.0, 0.0, 0.075), 1.0)
+	draw_rect(Rect2(0, 0, 28, CONTROL_TOP), Color(0.01, 0.0, 0.03, 0.34))
+	draw_rect(Rect2(1252, 0, 28, CONTROL_TOP), Color(0.01, 0.0, 0.03, 0.34))
+	if collapse_active:
+		var warning_alpha = 0.035 + 0.035 * abs(sin(game_time * 9.0))
+		draw_rect(Rect2(0, 105, 1280, CONTROL_TOP - 105), Color(1.0, 0.05, 0.12, warning_alpha))
 
 func draw_hud():
 	draw_rect(Rect2(0, 0, 1280, 108), Color("#050508f5"))
@@ -958,6 +1405,8 @@ func draw_hud():
 func get_objective_text():
 	if stage_finished:
 		return "MISSION COMPLETE // VHS QUARTER SURVIVED."
+	if boss_started and boss_hp <= 0:
+		return "OBJECTIVE // ESCAPE THE COLLAPSE. RUN."
 	if boss_started:
 		return "OBJECTIVE // EXECUTE THE EXECUTIONER."
 	if relay_alive[0]:
@@ -1028,4 +1477,3 @@ func draw_results_panel():
 		grade = "S"
 	draw_string(ThemeDB.fallback_font, Vector2(875, 388), grade, HORIZONTAL_ALIGNMENT_LEFT, -1, 92, Color("#ff2d95"))
 	draw_string(ThemeDB.fallback_font, Vector2(305, 500), "GRIM LEDGER: SURVIVAL REMAINS BULLISH.", HORIZONTAL_ALIGNMENT_LEFT, -1, 18, Color("#f3efe8"))
-
